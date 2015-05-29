@@ -16,23 +16,104 @@ import logging
 logging.basicConfig(format="%(message)s", level=logging.WARNING, stream=sys.stdout)
 np.set_printoptions(precision=4)
 np.set_printoptions(suppress=True)
-from copy import deepcopy
 
-import sknn.mlp as mlp
+import keras
 
-class RNNRegressor():
-    """Regressor.
-    """
-
-    def __init__(self):
-        pass
+from keras.models import Sequential
+from keras.layers.core import Dense, Dropout, Activation
+from keras.layers.recurrent import LSTM, GRU
+from keras.optimizers import SGD
 
 
-
+import sknn
+import nn
 
 
 
 
+class RecurrentLayer(nn.Layer):
+    def __init__(
+            self,
+            type,
+            outer_type = None,
+            inner_type = None,
+            warning=None,
+            name=None,
+            units=None,
+            pieces=None,
+            inner_pieces = None,
+            weight_decay=None,
+            dropout=None):
+
+        assert warning is None,\
+            "Specify layer parameters as keyword arguments, not positional arguments."
+
+        if type not in ["GRU", "LSTM"]:
+            raise NotImplementedError("Recurrent Layer type `%s` is not implemented." % type)
+
+        if inner_type not in ['Rectifier', 'Sigmoid', 'Tanh']:
+            raise NotImplementedError("Layer type `%s` is not implemented." % type)
+
+
+        self.name = name
+        self.type = type
+        self.inner_type = inner_type
+        self.outer_type = outer_type
+        self.units = units
+        self.pieces = pieces
+        self.inner_pieces = inner_pieces
+        self.weight_decay = weight_decay
+        self.dropout = dropout
+
+    def set_params(self, **params):
+        """Setter for internal variables that's compatible with ``scikit-learn``.
+        """
+        for k, v in params.items():
+            if k not in self.__dict__:
+                raise ValueError("Invalid parameter `%s` for layer `%s`." % (k, self.name))
+            self.__dict__[k] = v
+
+    def __eq__(self, other):
+        return self.__dict__ == other.__dict__
+
+    def __repr__(self):
+        copy = self.__dict__.copy()
+        del copy['type']
+        params = ", ".join(["%s=%r" % (k, v) for k, v in copy.items() if v is not None])
+        return "<sknn.rnn.%s %s`%s`: %s>" % (self.__class__.__name__, self.type, self.inner_type, params)
+
+
+class RecurrentNeuralNetwork(nn.NeuralNetwork):
+
+
+    def _check_layer(self, layer, required, optional=[]):
+        return True
+
+    def _create_layer(self, name, layer, input_units):
+
+
+        if layer.type == 'Rectifier':
+            self._check_layer(layer, ['units'])
+            return [Dense(input_dim=input_units,output_dim= layer.units, activation="relu")]
+
+
+        if layer.type == 'Linear':
+            self._check_layer(layer, ['units'])
+            return [Dense(input_dim=input_units,output_dim= layer.units, activation="linear")]
+
+        if layer.type == 'GRU':
+            self._check_layer(layer, ['units'])
+            conversion = {}
+            conversion["Rectifier"] = "relu"
+
+            return [GRU(input_dim=input_units,output_dim= layer.units, activation=conversion[layer.outer_type], inner_activation = conversion[layer.inner_type])]
+
+
+    def _setup(self):
+        self.initialised = False
+
+    def is_initialized(self):
+        return self.initialised
 
     def fit(self, X_list, y_list):
         """Fit the neural network to the given data.
@@ -56,7 +137,36 @@ class RNNRegressor():
 
         ## initialise
 
-        pass
+
+        if(not self.is_initialized()):
+            print "Initialising"
+            n_input = len(X_list[0][0])
+            n_output = len(y_list[0])
+            model = Sequential()
+            #model.add(Activation('linear'))
+            for i in range(len(self.layers)):
+
+                if( i + 1 == len(self.layers)):
+                    self.layers[i].units = n_output
+
+                if(i == 0 ):
+                    input_units = n_input
+                else:
+                    input_units = self.layers[i-1].units
+                seq = self._create_layer("noname",self.layers[i],input_units)
+                for s in seq:
+                    model.add(s)
+                self.initialised = True
+
+            sgd = SGD(nesterov=True,momentum=0.9, decay=0.001,lr =0.01 )
+            model.compile(loss='mse', optimizer=sgd)
+
+
+        model.fit(X_list, y_list, batch_size=self.batch_size, nb_epoch=int(self.n_iter),verbose=True, show_accuracy=True)
+        self.model = model
+
+
+
 
 
 
@@ -78,50 +188,60 @@ class RNNRegressor():
         """
 
 
-        pass
+        return self.model.evaluate(X_list,y_list)
 
 
-def generate_data(test = False):
-    g = lambda _: [np.array([np.random.randint(-1,1)*1.0]) for i in range(5)]
+
+def generate_data(l = 11,max_pad = 20):
+    g = lambda _: [([np.random.randint(1,2)*1.0]   ) for i in range(np.random.randint(4,l))]
     #print l
-    X = [g(i) for i in range(1000)]
+    p = lambda seq: seq + [[0]] * (max_pad - len(seq))
+    X = [p(g(i)) for i in range(4000)]
     #print X
     y = []
     #print X
     for i in range(0, len(X)):
         x = X[i]
 
-        c = x[0] - x[1]
-        y_i = [[None] for i in range(len(x)-1)] + [c]
+        c = x[0][0] - x[1][0]
+        y_i = [c, 1]
         #print y_i
         y.append(y_i)
-
+    X = np.array(X)
+    y = np.array(y)
+    print X.shape
+    print y.shape
+    # # exit()
+    #print X
     return X, y
 
 
 
 if __name__=="__main__":
 
-    #
-    layers = [mlp.Layer("Maxout", units=8, pieces=2),mlp.Layer("Maxout", units=8, pieces=2), mlp.Layer("Linear")]
-    # mlp.Classifier(
-    #     layers=[mlp.Layer("maxout", units=units), mlp.Layer(output)], random_state=1,
-    #     n_iter=iterations, n_stable=iterations, regularize=regularize,
-    #     dropout_rate=dropout, learning_rule=rule, learning_rate=alpha)
 
 
+    X,y = generate_data(5)
 
-    X,y = generate_data()
-    clf = RNNRegressor(layers=layers, hidden_state_variables=20, n_iter=100, learning_rate=0.001 , learning_rule = "momentum", batch_size=10)
+    layers = layers=[RecurrentLayer("GRU", outer_type= "Rectifier", inner_type = "Rectifier",  units=20),
+                                    nn.Layer("Linear")]
+    clf = RecurrentNeuralNetwork(layers=layers, n_iter=2)
 
     clf.fit(X,y)
-    X_list, y_list = generate_data()
-    X_mod, y_mod = clf.predict(X_list, y_list)
 
-    y_2d_orig = np.array(np.array(y_list).transpose(2,0,1)[0].T[-1])
-    y_2d_rec = np.array(y_mod).transpose(2,0,1)[0].T[-1]
 
-    print "Unseen data MSE", mse(y_2d_orig,y_2d_rec)
+    X,y = generate_data(7)
+    score = clf.predict(X,y)
+    print score, "7"
+
+    X,y = generate_data(5)
+    score = clf.predict(X,y)
+    print score, "5"
+
+    X,y = generate_data(100,100)
+    score = clf.predict(X,y)
+    print score, "3"
+
     # print y[:10]
     # print y_hat[:10]
 
